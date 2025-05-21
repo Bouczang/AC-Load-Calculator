@@ -1,0 +1,275 @@
+"""
+offshore_electrical_calculator.py
+UK/IEC compliant calculator for offshore electrical equipment sizing
+"""
+
+class OffshoreElectricalCalculator:
+    def __init__(self):
+        # Marine environmental factors
+        self.marine_correction = 0.9  # Derating for salt/moisture
+        self.vibration_factor = 0.95  # Derating for vessel vibration
+        
+    def calculate_min_contactor_size(self, current: float, duty_cycle: str = 'AC1') -> float:
+        """
+        Calculate contactor size per IEC 60947-4-1 with offshore factors
+        
+        Args:
+            current: Load current in amps
+            duty_cycle: AC1 (resistive), AC3 (motor), AC4 (high inrush)
+            
+        Returns:
+            Recommended contactor size in amps
+        """
+        # IEC standard factors with offshore derating
+        safety_factors = {
+            'AC1': 1.4,  # Resistive loads (higher for offshore)
+            'AC3': 1.75, # Squirrel cage motors
+            'AC4': 2.25  # High inrush loads
+        }
+        
+        factor = safety_factors.get(duty_cycle, 1.5)
+        return current * factor * self.marine_correction * self.vibration_factor
+
+    def calculate_breaker_size(self, current: float, load_type: str = 'general') -> float:
+        """
+        Calculate circuit breaker size per IEC 60947-2 with offshore factors
+        
+        Args:
+            current: Load current in amps
+            load_type: 'motor', 'transformer', 'capacitor', 'general'
+            
+        Returns:
+            Recommended breaker size in amps
+        """
+        # IEC multipliers with offshore adjustments
+        multipliers = {
+            'motor': 2.0,       # IEC 60947-4-1
+            'transformer': 1.35, # IEC 60076
+            'capacitor': 1.5,
+            'general': 1.25
+        }
+        
+        multiplier = multipliers.get(load_type, 1.25)
+        return current * multiplier * self.marine_correction
+
+    def calculate_fuse_size(self, current: float, load_type: str = 'general') -> float:
+        """
+        Calculate fuse size per IEC 60269 with offshore factors
+        
+        Args:
+            current: Load current in amps
+            load_type: 'motor', 'transformer', 'general'
+            
+        Returns:
+            Recommended fuse size in amps
+        """
+        multipliers = {
+            'motor': 1.6,      # IEC 60269-4-1
+            'transformer': 1.4,
+            'general': 1.25
+        }
+        
+        multiplier = multipliers.get(load_type, 1.25)
+        return current * multiplier * self.marine_correction
+
+    def calculate_cable_size(self, current: float, 
+                          insulation_type: str = 'XLPE', 
+                          installation: str = 'cable_tray',
+                          ambient_temp: float = 40,
+                          depth: float = 0) -> float:
+        """
+        Calculate cable size in mm² per IEC 60092-350/352/353 for offshore applications
+        
+        Args:
+            current: Load current in amps
+            insulation_type: 'PVC', 'XLPE', 'EPR'
+            installation: 'cable_tray', 'conduit', 'buried', 'j-tube'
+            ambient_temp: Ambient temperature in °C
+            depth: Burial depth in meters (for buried cables)
+            
+        Returns:
+            Recommended cable size in mm²
+        """
+        # Base ampacity for 45°C ambient in air (IEC 60092-352)
+        # Copper conductors, single-core in free air
+        ampacity = {
+            1.5: 19,   2.5: 25,    4: 34,     6: 43,
+            10: 60,    16: 80,    25: 106,   35: 131,
+            50: 159,   70: 200,   95: 245,   120: 285,
+            150: 325,  185: 375,  240: 440,  300: 505
+        }
+        
+        # Temperature correction (IEC 60092-352)
+        temp_correction = {
+            'PVC': {40: 1.0, 45: 0.91, 50: 0.82},
+            'XLPE': {40: 1.0, 45: 0.93, 50: 0.87},
+            'EPR': {40: 1.0, 45: 0.94, 50: 0.89}
+        }
+        
+        # Installation correction factors (IEC 60092-352)
+        install_correction = {
+            'cable_tray': 1.0,
+            'conduit': 0.8,
+            'buried': 0.7,
+            'j-tube': 0.75
+        }
+        
+        # Burial depth correction (for buried cables)
+        if depth > 0.8:
+            burial_correction = 0.9
+        else:
+            burial_correction = 1.0
+        
+        # Apply all correction factors
+        corrected_current = current / (
+            temp_correction[insulation_type].get(ambient_temp, 1.0) *
+            install_correction.get(installation, 1.0) *
+            burial_correction *
+            self.marine_correction
+        )
+        
+        # Find smallest suitable cable
+        for size, amp in sorted(ampacity.items()):
+            if amp >= corrected_current:
+                return size
+        
+        raise ValueError("Current exceeds maximum single cable rating")
+
+    def calculate_voltage_drop(self, current: float, size: float, 
+                             length: float, pv: float = 0.083) -> float:
+        """
+        Calculate voltage drop per IEC 60092-352
+        
+        Args:
+            current: Current in amps
+            size: Cable size in mm²
+            length: One-way length in meters
+            pv: Voltage drop per A/m (default for XLPE)
+            
+        Returns:
+            Voltage drop in volts
+        """
+        # mV/A/m values for XLPE cables at 90°C
+        mv_per_am = {
+            1.5: 28,  2.5: 17,  4: 11,   6: 7.3,
+            10: 4.4, 16: 2.8, 25: 1.75, 35: 1.25,
+            50: 0.93, 70: 0.63, 95: 0.46, 120: 0.39
+        }
+        
+        pv = mv_per_am.get(size, 0.083) / 1000  # Convert to V/A/m
+        return current * length * pv * 2  # Account for return path
+
+    def full_calculation(self, voltage: float, power: float, 
+                        power_factor: float = 0.8, length: float = 100,
+                        **kwargs) -> dict:
+        """
+        Complete offshore electrical sizing calculation
+        
+        Args:
+            voltage: Line voltage (V)
+            power: Apparent power (VA)
+            power_factor: System power factor
+            length: Cable run length (m)
+            
+        Returns:
+            Dictionary with all sizing results
+        """
+        current = power / (voltage * power_factor)
+        
+        # Calculate component sizes
+        cable_size = self.calculate_cable_size(
+            current,
+            kwargs.get('insulation', 'XLPE'),
+            kwargs.get('installation', 'cable_tray'),
+            kwargs.get('ambient_temp', 40),
+            kwargs.get('depth', 0)
+        )
+        
+        v_drop = self.calculate_voltage_drop(current, cable_size, length)
+        percent_drop = (v_drop / voltage) * 100
+        
+        return {
+            'current': round(current, 2),
+            'contactor': round(self.calculate_min_contactor_size(
+                current, kwargs.get('duty_cycle', 'AC3')), 2),
+            'breaker': round(self.calculate_breaker_size(
+                current, kwargs.get('load_type', 'motor')), 2),
+            'fuse': round(self.calculate_fuse_size(
+                current, kwargs.get('load_type', 'motor')), 2),
+            'cable_size': cable_size,
+            'voltage_drop': round(v_drop, 2),
+            'percent_drop': round(percent_drop, 1),
+            'units': {
+                'current': 'A',
+                'contactor': 'A',
+                'breaker': 'A',
+                'fuse': 'A',
+                'cable_size': 'mm²',
+                'voltage_drop': 'V',
+                'percent_drop': '%'
+            },
+            'standards': {
+                'cables': 'IEC 60092-350/352/353',
+                'protection': 'IEC 60947/60269',
+                'installation': 'IEC 60092-502'
+            }
+        }
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Offshore Electrical Sizing Calculator (UK/IEC Standards)"
+    )
+    
+    # Required arguments
+    parser.add_argument('voltage', type=float, help="System voltage (V)")
+    parser.add_argument('power', type=float, help="Apparent power (VA)")
+    
+    # Optional arguments
+    parser.add_argument('--pf', type=float, default=0.8, 
+                       help="Power factor (default: 0.8)")
+    parser.add_argument('--length', type=float, default=100,
+                       help="Cable run length in meters (default: 100)")
+    parser.add_argument('--duty', default='AC3', 
+                       help="Contactor duty cycle (AC1, AC3, AC4)")
+    parser.add_argument('--load', default='motor', 
+                       help="Load type (motor, transformer, general)")
+    parser.add_argument('--insulation', default='XLPE',
+                       help="Cable insulation (PVC, XLPE, EPR)")
+    parser.add_argument('--install', default='cable_tray',
+                       help="Installation method (cable_tray, conduit, buried)")
+    
+    args = parser.parse_args()
+    
+    calculator = OffshoreElectricalCalculator()
+    results = calculator.full_calculation(
+        voltage=args.voltage,
+        power=args.power,
+        power_factor=args.pf,
+        length=args.length,
+        duty_cycle=args.duty,
+        load_type=args.load,
+        insulation=args.insulation,
+        installation=args.install
+    )
+    
+    print("\nOFFSHORE ELECTRICAL COMPONENT SIZING (UK/IEC STANDARDS)")
+    print("="*55)
+    print(f"System Parameters:")
+    print(f"- Voltage: {args.voltage}V, Power: {args.power/1000:.1f}kVA")
+    print(f"- PF: {args.pf}, Cable Length: {args.length}m")
+    print("\nResults:")
+    print(f"- Load Current: {results['current']} {results['units']['current']}")
+    print(f"- Contactor Size: {results['contactor']} {results['units']['contactor']}")
+    print(f"- Circuit Breaker: {results['breaker']} {results['units']['breaker']}")
+    print(f"- Fuse Rating: {results['fuse']} {results['units']['fuse']}")
+    print(f"- Cable Size: {results['cable_size']} {results['units']['cable_size']}")
+    print(f"- Voltage Drop: {results['voltage_drop']} {results['units']['voltage_drop']} ({results['percent_drop']}%)")
+    
+    print("\nCompliance Standards:")
+    for k, v in results['standards'].items():
+        print(f"- {k.capitalize()}: {v}")
+
+if __name__ == "__main__":
+    main()
